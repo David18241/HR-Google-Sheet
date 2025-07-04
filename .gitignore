@@ -1,1 +1,10 @@
 .clasp.json
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude settings
+.claude/settings.local.json
