@@ -171,8 +171,27 @@ function addCommenterToFolder(folderObject, email) {
         return;
     }
     try {
-        folderObject.addCommenter(email);
-        Logger.log(`Added ${email} as commenter to folder ID ${folderObject.getId()}.`);
+        const folderId = folderObject.getId();
+        
+        // First try using the Advanced Drive Service for true "commenter" access
+        try {
+            const permission = {
+                'role': 'commenter',
+                'type': 'user',
+                'emailAddress': email
+            };
+            
+            Drive.Permissions.create(permission, folderId, {
+                'sendNotificationEmails': false,
+                'supportsAllDrives': true  // Required for shared drives
+            });
+            Logger.log(`Added ${email} as commenter to folder ID ${folderId} using Drive API.`);
+        } catch (driveApiError) {
+            // If Drive API fails, fall back to addViewer
+            Logger.log(`Drive API failed, falling back to addViewer: ${driveApiError.message}`);
+            folderObject.addViewer(email);
+            Logger.log(`Added ${email} as viewer to folder ID ${folderId} (fallback).`);
+        }
     } catch (error) {
         Logger.log(`Error adding ${email} as commenter to folder ID ${folderObject.getId()}: ${error.message}`);
         // Optionally alert the user

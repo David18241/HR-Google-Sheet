@@ -23,134 +23,41 @@ function onOpen() {
  */
 function onboardEmployeeWorkflow() {
   const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // 1. Get Sheet Data and Headers
-  const sheetInfo = getSheetDataWithHeaders(PERSONNEL_SHEET_NAME, ss);
-  if (!sheetInfo) return; // Error handled in helper
-  const { headerMap } = sheetInfo;
-
-  // 2. Get Active Row Data
-  const activeRowInfo = getActiveRowData(PERSONNEL_SHEET_NAME, headerMap, ss);
-  if (!activeRowInfo) return; // Error handled in helper
-  const { rowData, rowIndex, range } = activeRowInfo;
-
-  // 3. Extract Employee Information
-  const firstName = rowData[headerMap[COL_FIRST_NAME]];
-  const lastName = rowData[headerMap[COL_LAST_NAME]];
-  const employeeEmail = rowData[headerMap[COL_WORK_EMAIL]];
-  const startDateObj = rowData[headerMap[COL_START_DATE]] ? new Date(rowData[headerMap[COL_START_DATE]]) : null;
-  const jobFolderId = rowData[headerMap[COL_JOB_FOLDER_ID]];
-  const medRecFolderId = rowData[headerMap[COL_MED_REC_FOLDER_ID]];
-  const job = rowData[headerMap[COL_JOB_CLASSIFICATION]];
-  const groupEmail = rowData[headerMap[COL_GROUP_EMAIL]];
-
-  // Validate essential info
-  if (!firstName || !lastName || !employeeEmail || !startDateObj || isNaN(startDateObj.getTime()) || !jobFolderId || !medRecFolderId || !job) {
-      ui.alert(`Missing essential information in the selected row (Row ${rowIndex}). Please ensure First Name, Last Name, Work Email, Start Date, Job Folder ID, Med Rec Folder ID, and Primary Classification are filled correctly.`);
-      Logger.log(`Onboarding aborted for row ${rowIndex} due to missing data.`);
-      return;
-  }
-
-  const formattedStartDate = formatDate(startDateObj);
-  const employeeFolderName = `${lastName}, ${firstName}`;
-  const employeeAccessFolderName = `${employeeFolderName} ${EMPLOYEE_ACCESS_FOLDER_SUFFIX}`;
-
-  // --- Start Process ---
-  ui.showSidebar(HtmlService.createHtmlOutput('<p>Processing onboarding for ' + employeeFolderName + '... Please wait.</p>').setWidth(300).setHeight(100));
-  SpreadsheetApp.flush(); // Ensure UI updates
-
-
+  
   try {
-      // 4. Create Folders
-      const employeeMedRecFolder = createFolderIfNotExists(employeeFolderName, medRecFolderId);
-      if (!employeeMedRecFolder) throw new Error(`Failed to create Medical Record folder for ${employeeFolderName}.`);
+    // 1. Extract and validate employee data
+    const requiredFields = ['firstName', 'lastName', 'workEmail', 'startDate', 'jobFolderId', 'jobClassification'];
+    const employeeData = extractAndValidateEmployeeData(PERSONNEL_SHEET_NAME, requiredFields);
+    if (!employeeData) return;
 
-      const employeeFolder = createFolderIfNotExists(employeeFolderName, jobFolderId);
-      if (!employeeFolder) throw new Error(`Failed to create main HR folder for ${employeeFolderName}.`);
+    // 2. Create folder structure
+    const folders = createEmployeeFolders(employeeData);
+    if (!folders) return;
 
-      const employeeAccessFolder = createFolderIfNotExists(employeeAccessFolderName, employeeFolder.getId());
-       if (!employeeAccessFolder) throw new Error(`Failed to create Employee Access subfolder for ${employeeFolderName}.`);
+    // 3. Generate documents
+    const documents = generateEmployeeDocuments(employeeData, folders);
+    if (!documents) return;
 
+    // 4. Set permissions
+    if (!setEmployeePermissions(employeeData, folders, documents)) return;
 
-      // 5. Create and Personalize Documents
-      const hepBPlaceholders = {
-          "{{Employee Name}}": `${firstName} ${lastName}`,
-          "{{First Name}}": firstName,
-          "{{Last Name}}": lastName,
-          "{{Date}}": formattedStartDate
-      };
-      const hepBDoc = copyAndPersonalizeDocument(HEPB_VAX_FORM_ID, employeeMedRecFolder, `${employeeFolderName} - Hepatitis B Vaccination Form`, hepBPlaceholders);
-      if (!hepBDoc) throw new Error(`Failed to create Hepatitis B document for ${employeeFolderName}.`);
+    // 5. Update records
+    if (!updateEmployeeRecords(employeeData, folders)) return;
 
-      // Deprecated Docs (kept comments from original)
-      // const hipaaDoc = personalizeHipaaAgreementDocument(employeeFolder, employeeFolderName, formattedStartDate); // Now handled by form
-      // const handbookDoc = personalizeHandbookDocument(employeeFolder, employeeFolderName, formattedStartDate); // Assuming handbook is separate or linked in onboarding doc
-      // Using placeholders for where these *would* go if they were still generated docs
-      const placeholderHipaaLink = "https://link.to.your.hipaa.policy.or.form"; // Replace with actual link
-      const placeholderHandbookLink = "https://link.to.your.handbook.or.form"; // Replace with actual link
+    // 6. Add to groups
+    if (!addEmployeeToGroups(employeeData)) return;
 
+    // 7. Send notifications
+    if (!sendEmployeeNotifications(employeeData, documents)) return;
 
-      const onboardingPlaceholders = {
-          "{{Employee Name}}": `${firstName} ${lastName}`,
-          "{{First Name}}": firstName,
-          "{{Last Name}}": lastName,
-          "{{Start Date}}": formattedStartDate,
-           // Placeholders for links - using the link replacement feature in the email helper now
-         // "{{hipaaDoc}}": { text: "Confidentiality and Security Agreement", url: placeholderHipaaLink }, //Deprecated after transition to google form
-         // "{{handbookDoc}}": { text: "Handbook Acknowledgement", url: placeholderHandbookLink }, //Deprecated after transition to google form
-          "{{hepBDoc}}": { text: "Hepatitis B Vaccination Form", url: hepBDoc.getUrl() }, // Use actual Hep B doc URL
-          "{{medRecFolder}}": { text: "Medical Record Folder", url: employeeMedRecFolder.getUrl()}
-      };
-      // Need a specialized function for onboarding doc due to link replacements within list items
-      // For now, using the old function structure, needs refactor to use generic helpers better
-      const onboardingDoc = personalizeOnboardingDocumentSpecial(employeeFolder, employeeFolderName, formattedStartDate, hepBDoc, employeeMedRecFolder, placeholderHipaaLink, placeholderHandbookLink);
-      if (!onboardingDoc) throw new Error(`Failed to create Onboarding document for ${employeeFolderName}.`);
-
-
-      // 6. Set Permissions
-      addEditorToFile(hepBDoc, employeeEmail); // Employee needs to sign Hep B form
-      addCommenterToFolder(employeeAccessFolder, employeeEmail); // Employee views and comments on content in their access folder
-       // Decide if employee needs edit access to the main onboarding checklist itself
-       // addEditorToFile(onboardingDoc, employeeEmail);
-
-
-       // 7. Update Spreadsheet with Folder IDs (RECOMMENDED)
-       // Check if columns exist, if not, add them? Or just log a warning.
-        if (headerMap.hasOwnProperty(COL_EMPLOYEE_DRIVE_FOLDER_ID)) {
-             sheetInfo.sheet.getRange(rowIndex, headerMap[COL_EMPLOYEE_DRIVE_FOLDER_ID] + 1).setValue(employeeFolder.getId());
-        } else Logger.log(`Column "${COL_EMPLOYEE_DRIVE_FOLDER_ID}" not found. Cannot write employee folder ID.`);
-
-        if (headerMap.hasOwnProperty(COL_EMPLOYEE_MEDREC_FOLDER_ID)) {
-             sheetInfo.sheet.getRange(rowIndex, headerMap[COL_EMPLOYEE_MEDREC_FOLDER_ID] + 1).setValue(employeeMedRecFolder.getId());
-        } else Logger.log(`Column "${COL_EMPLOYEE_MEDREC_FOLDER_ID}" not found. Cannot write med rec folder ID.`);
-
-
-      // 8. Update Access Log
-      updateAccessLog(ACCESS_LOG_SS_ID, ACCESS_LOG_SHEET_NAME, employeeFolderName, formattedStartDate, job);
-
-      // 9. Add to Google Groups
-      addMembershipToGroups(employeeEmail, groupEmail, PRACTICE_GROUP_EMAIL);
-
-      // 10. Create Email Drafts
-      // Name Tag Email
-      const nameTagPlaceholders = { "{{FirstName}}": firstName };
-      createEmailFromTemplate(NAMETAG_EMAIL_ID, NAMETAG_VENDOR_EMAIL, `Additional Name Tag for ${firstName} ${lastName}`, nameTagPlaceholders, true, `Name Tag Request - ${employeeFolderName}`);
-
-      // Welcome Email
-      const welcomePlaceholders = {
-        "{{FirstName}}": firstName,
-        "{{hepBDoc}}": { text: "Hepatitis B Vaccination Form", url: hepBDoc.getUrl() } // Pass link object
-      };
-      createEmailFromTemplate(WELCOME_EMAIL_ID, employeeEmail, 'Welcome to the Team!', welcomePlaceholders, true, `Welcome Email - ${employeeFolderName}`);
-
-      // --- Finish Process ---
-      ui.alert(`Onboarding process completed successfully for ${firstName} ${lastName}. Check drafts for Name Tag and Welcome emails.`);
-      Logger.log(`Onboarding successful for ${employeeFolderName} (Row ${rowIndex}).`);
+    // --- Success ---
+    closeSidebar();
+    ui.alert(`Onboarding process completed successfully for ${employeeData.fullName}. Check drafts for Name Tag and Welcome emails.`);
+    Logger.log(`Onboarding successful for ${employeeData.employeeFolderName} (Row ${employeeData.rowIndex}).`);
 
   } catch (error) {
-      Logger.log(`ONBOARDING FAILED for ${employeeFolderName} (Row ${rowIndex}): ${error.message} \nStack: ${error.stack}`);
-      ui.alert(`Onboarding process FAILED for ${firstName} ${lastName}. Error: ${error.message}. Please check the logs for details and manually complete any remaining steps.`);
+    closeSidebar();
+    handleWorkflowError(error, 'Onboarding workflow', 'Onboarding process failed. Please check the logs and manually complete any remaining steps.');
   }
 }
 
@@ -247,77 +154,97 @@ function replaceListItemPlaceholderWithLink(textElement, placeholder, linkText, 
  * @param {string} attestationType A descriptive name (e.g., "OSHA", "HIPAA") for logging/alerts.
  */
 function sendTrainingAttestationWorkflow(templateId, emailSubject, attestationType) {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    const result = processAttestationEmails(templateId, emailSubject, attestationType);
+    
+    if (result) {
+      const summaryMessage = `${attestationType} Attestation Email Summary:\n` +
+                           `Successfully sent: ${result.emailsSent}\n` +
+                           `Skipped or failed: ${result.emailsFailed}`;
+      SpreadsheetApp.getUi().alert(summaryMessage);
+      Logger.log(summaryMessage);
+    }
+  } catch (error) {
+    closeSidebar();
+    handleWorkflowError(error, `${attestationType} attestation workflow`, `Failed to send ${attestationType} attestation emails`);
+  }
+}
 
-  // 1. Get Sheet Data
+/**
+ * Processes attestation emails for all active employees.
+ * 
+ * @param {string} templateId Template ID for the email
+ * @param {string} emailSubject Email subject line
+ * @param {string} attestationType Type of attestation (OSHA, HIPAA, etc.)
+ * @returns {Object|null} Results object with counts or null on failure
+ */
+function processAttestationEmails(templateId, emailSubject, attestationType) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Get sheet data
   const sheetInfo = getSheetDataWithHeaders(PERSONNEL_SHEET_NAME, ss);
-  if (!sheetInfo) return;
+  if (!sheetInfo) return null;
   const { data, headerMap } = sheetInfo;
 
-  // 2. Validate Headers
+  // Validate required headers
   const requiredHeaders = [COL_FIRST_NAME, COL_WORK_EMAIL, COL_ACTIVE];
-  for (const header of requiredHeaders) {
-    if (!headerMap.hasOwnProperty(header)) {
-      ui.alert(`Error: Missing required column "${header}" in the "${PERSONNEL_SHEET_NAME}" sheet.`);
-      Logger.log(`Missing header "${header}" for ${attestationType} attestation email.`);
-      return;
-    }
+  const validation = validateRequiredFields(headerMap, requiredHeaders, `${attestationType} attestation headers`);
+  if (!validation.isValid) {
+    SpreadsheetApp.getUi().alert(`Error: Missing required columns in "${PERSONNEL_SHEET_NAME}" sheet:\n${validation.missingFields.join(', ')}`);
+    return null;
   }
+
   const firstNameIndex = headerMap[COL_FIRST_NAME];
   const emailIndex = headerMap[COL_WORK_EMAIL];
   const isActiveIndex = headerMap[COL_ACTIVE];
 
-  // 3. Loop through employees and send emails
+  // Process emails
   let emailsSent = 0;
   let emailsFailed = 0;
   const totalEmployees = data.length - 1; // Exclude header row
 
-  ui.showSidebar(HtmlService.createHtmlOutput(`<p>Sending ${attestationType} attestations... </p><p id="status">Processing 0/${totalEmployees}</p>`).setWidth(300).setHeight(100), `${attestationType} Sending Status`);
-  SpreadsheetApp.flush();
-
+  showProgressSidebar(`${attestationType} Attestations`, 'Initializing...', 0, totalEmployees);
 
   for (let i = 1; i < data.length; i++) { // Start at 1 to skip header
     const row = data[i];
     const firstName = row[firstNameIndex];
     const email = row[emailIndex];
-    const isActive = String(row[isActiveIndex]).trim().toLowerCase(); // Normalize 'Yes'/'No'
+    const isActive = String(row[isActiveIndex]).trim().toLowerCase();
 
-     // Update status in sidebar (optional, can slow down if many employees)
-    // Use eval to run client-side script in sidebar
-    const statusUpdateScript = `<script>document.getElementById('status').innerText = 'Processing ${i}/${totalEmployees}';</script>`;
-    ui.showSidebar(HtmlService.createHtmlOutput(`<p>Sending ${attestationType} attestations... </p><p id="status">Processing ${i}/${totalEmployees}</p>${statusUpdateScript}`).setWidth(300).setHeight(100), `${attestationType} Sending Status`);
-    SpreadsheetApp.flush();
-
+    // Update progress
+    showProgressSidebar(`${attestationType} Attestations`, `Processing ${firstName || 'employee'}...`, i, totalEmployees);
 
     // Check if active and has required info
-    if (isActive === 'yes' && firstName && email) {
+    if (isActive === 'yes' && firstName && email && isValidEmail(email)) {
       const placeholders = { "{{FirstName}}": firstName };
-      const success = createEmailFromTemplate(templateId, email, emailSubject, placeholders, false, `${attestationType} Attestation - ${firstName}`); // false = send directly
+      const success = createEmailFromTemplate(
+        templateId, 
+        email, 
+        emailSubject, 
+        placeholders, 
+        false, // Send directly
+        `${attestationType} Attestation - ${firstName}`
+      );
+      
       if (success) {
         emailsSent++;
       } else {
         emailsFailed++;
-        // Error already logged and alerted in createEmailFromTemplate
       }
-        // Add a small delay to avoid exceeding quotas if sending many emails
-        Utilities.sleep(500); // Sleep for 500 milliseconds
-
-    } else if (isActive === 'yes' && (!firstName || !email)) {
-        Logger.log(`Skipping ${attestationType} email for row ${i + 1}: Missing First Name or Work Email for active employee.`);
-        emailsFailed++; // Count as failed/skipped
+      
+      // Small delay to avoid quota issues
+      Utilities.sleep(300);
+      
+    } else if (isActive === 'yes' && (!firstName || !email || !isValidEmail(email))) {
+      Logger.log(`Skipping ${attestationType} email for row ${i + 1}: Missing or invalid data for active employee.`);
+      emailsFailed++;
     }
-     // Else: Not active, skip silently
+    // Else: Not active, skip silently
   }
 
-  ui.closeSidebar();
-
-  // 4. Final Report
-  let summaryMessage = `${attestationType} Attestation Email Summary:\n`;
-  summaryMessage += `Successfully sent: ${emailsSent}\n`;
-  summaryMessage += `Skipped or failed: ${emailsFailed}`;
-  ui.alert(summaryMessage);
-  Logger.log(summaryMessage);
+  closeSidebar();
+  
+  return { emailsSent, emailsFailed };
 }
 
 /** Trigger for sending OSHA attestation emails. */
@@ -342,150 +269,180 @@ function sendHipaaAttestationWorkflow() {
  * Workflow to create the "Before First Day" email draft for the selected employee.
  */
 function createBeforeFirstDayEmailWorkflow() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    // Extract and validate employee data
+    const requiredFields = ['firstName', 'personalEmail'];
+    const employeeData = extractAndValidateEmployeeData(PERSONNEL_SHEET_NAME, requiredFields);
+    if (!employeeData) return;
 
-  // 1. Get Sheet Data and Headers
-  const sheetInfo = getSheetDataWithHeaders(PERSONNEL_SHEET_NAME, ss);
-  if (!sheetInfo) return;
-  const { headerMap } = sheetInfo;
-
-  // 2. Get Active Row Data
-  const activeRowInfo = getActiveRowData(PERSONNEL_SHEET_NAME, headerMap, ss);
-  if (!activeRowInfo) return;
-  const { rowData, rowIndex } = activeRowInfo;
-
-  // 3. Extract Required Info
-  const firstName = rowData[headerMap[COL_FIRST_NAME]];
-  const personalEmail = rowData[headerMap[COL_PERSONAL_EMAIL]]; // Use Personal Email
-
-  // Validate
-  if (!firstName || !personalEmail) {
-      ui.alert(`Missing First Name or Personal Email in the selected row (Row ${rowIndex}). Cannot create draft.`);
-      Logger.log(`Before First Day email draft creation aborted for row ${rowIndex} due to missing data.`);
-      return;
-  }
-
-  // 4. Create Draft
-  const placeholders = { "{{FirstName}}": firstName };
-  const success = createEmailFromTemplate(
+    // Create draft
+    const placeholders = { "{{FirstName}}": employeeData.firstName };
+    const success = createEmailFromTemplate(
       BEFORE_FIRST_DAY_EMAIL_ID,
-      personalEmail,
-      'Altamonte Dermatology: Getting Ready for Your First Day!', // Updated subject
+      employeeData.personalEmail,
+      'Altamonte Dermatology: Getting Ready for Your First Day!',
       placeholders,
-      true, // true = create draft
-      `Before First Day - ${firstName}`
-  );
+      true, // Create draft
+      `Before First Day - ${employeeData.firstName}`
+    );
 
-  if (success) {
-      ui.alert(`"Before First Day" email draft created successfully for ${firstName}. Please check your Gmail drafts.`);
+    if (success) {
+      SpreadsheetApp.getUi().alert(`"Before First Day" email draft created successfully for ${employeeData.firstName}. Please check your Gmail drafts.`);
+      Logger.log(`Before First Day email draft created for ${employeeData.employeeFolderName}.`);
+    }
+  } catch (error) {
+    handleWorkflowError(error, 'Before First Day email workflow', 'Failed to create Before First Day email draft');
   }
-  // Failure message handled by createEmailFromTemplate
 }
 
 
 /**
  * Workflow for offboarding an employee based on the selected row.
- * (Placeholder - implement actual offboarding steps)
  */
 function offboardEmployeeWorkflow() {
   const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  try {
+    // 1. Extract and validate employee data
+    const requiredFields = ['firstName', 'lastName', 'workEmail'];
+    const employeeData = extractAndValidateEmployeeData(PERSONNEL_SHEET_NAME, requiredFields);
+    if (!employeeData) return;
 
-  // 1. Get Sheet Data and Headers
-  const sheetInfo = getSheetDataWithHeaders(PERSONNEL_SHEET_NAME, ss);
-  if (!sheetInfo) return;
-  const { headerMap, sheet } = sheetInfo;
-
-  // 2. Get Active Row Data
-  const activeRowInfo = getActiveRowData(PERSONNEL_SHEET_NAME, headerMap, ss);
-  if (!activeRowInfo) return;
-  const { rowData, rowIndex, range } = activeRowInfo;
-
-  // 3. Extract Employee Information
-  const firstName = rowData[headerMap[COL_FIRST_NAME]];
-  const lastName = rowData[headerMap[COL_LAST_NAME]];
-  const employeeEmail = rowData[headerMap[COL_WORK_EMAIL]];
-  const endDateObj = rowData[headerMap[COL_END_DATE]] ? new Date(rowData[headerMap[COL_END_DATE]]) : new Date(); // Default to today if empty
-  const groupEmail = rowData[headerMap[COL_GROUP_EMAIL]];
-  const employeeFolderName = `${lastName}, ${firstName}`; // Needed for finding folders/docs if IDs aren't stored
-
-   // Optional: Get folder IDs if you stored them during onboarding
-   const employeeFolderId = headerMap[COL_EMPLOYEE_DRIVE_FOLDER_ID] ? rowData[headerMap[COL_EMPLOYEE_DRIVE_FOLDER_ID]] : null;
-   const employeeMedRecFolderId = headerMap[COL_EMPLOYEE_MEDREC_FOLDER_ID] ? rowData[headerMap[COL_EMPLOYEE_MEDREC_FOLDER_ID]] : null;
-
-
-  // 4. Confirmation Dialog
-  const confirmation = ui.prompt(
-      'Confirm Offboarding',
-      `Are you sure you want to initiate the offboarding process for ${firstName} ${lastName} (Row ${rowIndex})?\n\nThis will typically involve:\n- Marking as inactive\n- Removing from groups\n- Archiving folders (optional)\n- Creating offboarding checklist/email\n\nEnter 'OFFBOARD' to confirm:`,
-      ui.ButtonSet.OK_CANCEL);
-
-  if (confirmation.getSelectedButton() !== ui.Button.OK || confirmation.getResponseText().toUpperCase() !== 'OFFBOARD') {
+    // 2. Confirmation dialog
+    const confirmationMessage = `Are you sure you want to initiate the offboarding process for ${employeeData.fullName} (Row ${employeeData.rowIndex})?\n\n` +
+                               `This will:\n` +
+                               `- Mark employee as inactive\n` +
+                               `- Remove from Google Groups\n` +
+                               `- Archive folders and remove access\n` +
+                               `- Create offboarding documentation\n\n` +
+                               `This action affects active systems and should only be done when authorized.`;
+    
+    if (!showConfirmationDialog('Confirm Offboarding', confirmationMessage, 'OFFBOARD')) {
       ui.alert('Offboarding cancelled.');
       Logger.log('Offboarding cancelled by user.');
       return;
-  }
+    }
 
-  // --- Start Process ---
-  ui.showSidebar(HtmlService.createHtmlOutput('<p>Processing offboarding for ' + employeeFolderName + '... Please wait.</p>').setWidth(300).setHeight(100), 'Offboarding Status');
-  SpreadsheetApp.flush();
+    // If no end date provided, use today
+    if (!employeeData.endDate) {
+      employeeData.endDate = new Date();
+      employeeData.formattedEndDate = formatDate(employeeData.endDate);
+    }
 
-  try {
-      // TODO: Implement actual offboarding steps:
+    // 3. Mark as inactive
+    showProgressSidebar('Offboarding', `Processing offboarding for ${employeeData.employeeFolderName}...`, 1, 5);
+    if (!markEmployeeInactive(employeeData)) return;
 
-      // 5. Mark as Inactive & Set End Date in Sheet
-      if (headerMap.hasOwnProperty(COL_ACTIVE)) {
-          sheet.getRange(rowIndex, headerMap[COL_ACTIVE] + 1).setValue('No');
-      }
-       if (headerMap.hasOwnProperty(COL_END_DATE)) {
-            // Format date before setting, or set as Date object
-            sheet.getRange(rowIndex, headerMap[COL_END_DATE] + 1).setValue(endDateObj);
-       }
+    // 4. Remove from groups  
+    showProgressSidebar('Offboarding', `Removing from groups...`, 2, 5);
+    if (!removeEmployeeFromGroups(employeeData)) return;
 
+    // 5. Archive folders and remove access
+    showProgressSidebar('Offboarding', `Archiving folders...`, 3, 5);
+    if (!archiveEmployeeFolders(employeeData)) return;
 
-      // 6. Remove from Google Groups
-      removeMembershipFromGroups(employeeEmail, groupEmail, PRACTICE_GROUP_EMAIL);
+    // 6. Create offboarding documentation
+    showProgressSidebar('Offboarding', `Creating documentation...`, 4, 5);
+    createOffboardingDocumentation(employeeData);
 
-      // 7. Handle Drive Access / Archive Folders
-      //    - Remove editor/viewer access from employee-specific folders/files
-      //    - Potentially move employee folders (HR and MedRec) to an 'Archived Employees' parent folder.
-      //    - This requires finding the folders (ideally using stored IDs).
-      // Example (needs refinement and error handling):
-      /*
-      if (employeeFolderId) {
-          const employeeFolder = DriveApp.getFolderById(employeeFolderId);
-          employeeFolder.removeViewer(employeeEmail); // Or removeEditor if they had it
-          // Move to archive folder (get ARCHIVE_FOLDER_ID from Constants.gs)
-          // DriveApp.getFolderById(ARCHIVE_FOLDER_ID).addFolder(employeeFolder);
-          // DriveApp.getRootFolder().removeFolder(employeeFolder); // Remove from original parent *after* adding to archive
-          Logger.log(`Removed access and archived HR folder for ${employeeFolderName}`);
-      } else {
-          Logger.log(`Could not archive HR folder automatically: Employee Folder ID not found in sheet for row ${rowIndex}.`);
-      }
-      // Repeat for MedRec folder
-      */
+    // 7. Create offboarding email (optional)
+    showProgressSidebar('Offboarding', `Creating email notifications...`, 5, 5);
+    createOffboardingEmailNotification(employeeData);
 
-
-      // 8. Create Offboarding Checklist Document (Similar to Onboarding)
-      // const offboardingPlaceholders = { "{{Employee Name}}": `${firstName} ${lastName}`, "{{EndDate}}": formatDate(endDateObj) };
-      // copyAndPersonalizeDocument(OFFBOARDING_TEMPLATE_ID, /* Destination Folder? Maybe Admin's folder? */, `${employeeFolderName} - Offboarding Checklist`, offboardingPlaceholders);
-
-
-      // 9. Create Offboarding Email Draft (Optional - to employee or internal?)
-      // const offboardingEmailPlaceholders = { "{{FirstName}}": firstName, "{{LastName}}": lastName, "{{EndDate}}": formatDate(endDateObj) };
-      // createEmailFromTemplate(OFFBOARDING_EMAIL_ID, employeeEmail /* or internal HR email? */, 'Offboarding Information', offboardingEmailPlaceholders, true, `Offboarding Email - ${employeeFolderName}`);
-
-
-      // --- Finish Process ---
-       ui.closeSidebar();
-      ui.alert(`Offboarding process initiated for ${firstName} ${lastName}. Please complete any manual steps (e.g., final checks, system deactivations).`);
-      Logger.log(`Offboarding initiated for ${employeeFolderName} (Row ${rowIndex}).`);
+    // --- Success ---
+    closeSidebar();
+    ui.alert(`Offboarding process completed for ${employeeData.fullName}.\n\nPlease complete any additional manual steps:\n- System access reviews\n- Equipment collection\n- Final documentation review`);
+    Logger.log(`Offboarding completed for ${employeeData.employeeFolderName} (Row ${employeeData.rowIndex}).`);
 
   } catch (error) {
-      ui.closeSidebar();
-      Logger.log(`OFFBOARDING FAILED for ${employeeFolderName} (Row ${rowIndex}): ${error.message} \nStack: ${error.stack}`);
-      ui.alert(`Offboarding process FAILED for ${firstName} ${lastName}. Error: ${error.message}. Please check the logs and manually complete required steps.`);
+    closeSidebar();
+    handleWorkflowError(error, 'Offboarding workflow', 'Offboarding process failed. Please check the logs and manually complete required steps.');
   }
+}
 
+/**
+ * Creates offboarding documentation for an employee.
+ *
+ * @param {Object} employeeData Employee data object
+ * @returns {boolean} True if successful, false otherwise
+ */
+function createOffboardingDocumentation(employeeData) {
+  try {
+    // Only create documentation if template is available
+    if (!OFFBOARDING_TEMPLATE_ID) {
+      Logger.log('No offboarding template ID configured. Skipping document creation.');
+      return true;
+    }
+
+    // TODO: Determine destination folder - for now, use the job folder
+    const destinationFolder = employeeData.jobFolderId ? DriveApp.getFolderById(employeeData.jobFolderId) : null;
+    
+    if (!destinationFolder) {
+      Logger.log('No destination folder available for offboarding document. Skipping document creation.');
+      return true;
+    }
+
+    const offboardingPlaceholders = {
+      "{{Employee Name}}": employeeData.fullName,
+      "{{First Name}}": employeeData.firstName,
+      "{{Last Name}}": employeeData.lastName,
+      "{{End Date}}": employeeData.formattedEndDate,
+      "{{Job Classification}}": employeeData.jobClassification || 'N/A'
+    };
+
+    const offboardingDoc = copyAndPersonalizeDocument(
+      OFFBOARDING_TEMPLATE_ID,
+      destinationFolder,
+      `${employeeData.employeeFolderName} - Offboarding Checklist`,
+      offboardingPlaceholders
+    );
+
+    if (offboardingDoc) {
+      Logger.log(`Offboarding checklist created for ${employeeData.employeeFolderName}: ${offboardingDoc.getUrl()}`);
+    }
+
+    return true;
+  } catch (error) {
+    return handleWorkflowError(error, 'Offboarding documentation', `Failed to create offboarding documentation for ${employeeData.employeeFolderName}`, false);
+  }
+}
+
+/**
+ * Creates offboarding email notification.
+ *
+ * @param {Object} employeeData Employee data object
+ * @returns {boolean} True if successful, false otherwise
+ */
+function createOffboardingEmailNotification(employeeData) {
+  try {
+    // Only create email if template is available
+    if (!OFFBOARDING_EMAIL_ID) {
+      Logger.log('No offboarding email template ID configured. Skipping email creation.');
+      return true;
+    }
+
+    const offboardingEmailPlaceholders = {
+      "{{FirstName}}": employeeData.firstName,
+      "{{LastName}}": employeeData.lastName,
+      "{{End Date}}": employeeData.formattedEndDate
+    };
+
+    // Create draft email to the employee
+    const emailSuccess = createEmailFromTemplate(
+      OFFBOARDING_EMAIL_ID,
+      employeeData.workEmail,
+      'Important Information Regarding Your Departure',
+      offboardingEmailPlaceholders,
+      true, // Create as draft
+      `Offboarding Email - ${employeeData.employeeFolderName}`
+    );
+
+    if (emailSuccess) {
+      Logger.log(`Offboarding email draft created for ${employeeData.employeeFolderName}.`);
+    }
+
+    return true;
+  } catch (error) {
+    return handleWorkflowError(error, 'Offboarding email', `Failed to create offboarding email for ${employeeData.employeeFolderName}`, false);
+  }
 }

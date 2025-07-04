@@ -10,6 +10,8 @@ const ACCESS_LOG_SS_ID = '1l_klIn-rgBd2D26N4JPI7GZXdaDJinm0c127xq7wfzk'; // You 
 const PERSONNEL_SHEET_NAME = 'Personnel'; // This is the name of the sheet (located at the bottom) that has the main personnel info in the google spreadsheet
 const ACCESS_LOG_SHEET_NAME = 'Employees'; // This is the name of the sheet (located at the bottom) that has employee names in your Access Log spreadsheet above
 const PROVIDER_TRAINING_SHEET_NAME = "Provider Training & Credentialing";
+const MEDREC_FOLDER_ID = '1Cdtry0HlmOIHq_6r7-zo_hEMhXoW_l99'; // Main MedRec folder ID (job-classification independent)
+const FORMER_EMPLOYEES_FOLDER_ID = '1zwD8TG4GuWfrAmvWBGQAGO6AojQ_xjNs'; // Former Employees folder ID
 
 // --- Google Doc Template IDs ---
 const MED_REC_TEMPLATE_ID = '1njsWdsnZ1v-29Do7V1DI3gteok_AMvA_mLoehQXwtuY'; // Deprecated - See OnboardingHelpers.gs
@@ -29,8 +31,8 @@ const OSHA_TRAINING_ATTESTATION_EMAIL_TEMPLATE_ID = '1Bq8rFybGyV3rax4jn-uk1cmNmk
 const HIPAA_TRAINING_ATTESTATION_EMAIL_TEMPLATE_ID = '1Br3EZJwfJFIdVyUB0RqY7V5iGZm-OAEsiTJHub1m3UY';
 
 // --- Email Addresses / Groups ---
-const PRACTICE_GROUP_EMAIL = 'ADCompany@hcoll.org'; // Main practice group
-const NAMETAG_VENDOR_EMAIL = 'ma@mickeys.net';     // Name tag vendor
+const PRACTICE_GROUP_EMAIL = 'ADCompany@hcoll.org'; // Main practice group for all employees
+const NAMETAG_VENDOR_EMAIL = 'ma@mickeys.net';     // Email for name tag vendor
 const RENEWAL_NOTIFICATION_EMAIL = "mgmt@hcoll.org"; // Recipient for renewal notifications
 
 // --- Spreadsheet Column Headers (Case-sensitive) ---
@@ -41,11 +43,11 @@ const COL_PERSONAL_EMAIL = "Personal Email";
 const COL_START_DATE = "Start Date";
 const COL_END_DATE = "End Date"; // Assumed needed for offboarding
 const COL_JOB_FOLDER_ID = "Job Folder ID";
-const COL_MED_REC_FOLDER_ID = "Med Rec Folder ID";
+// const COL_MED_REC_FOLDER_ID = "Med Rec Folder ID"; // No longer needed - using MEDREC_FOLDER_ID constant instead
 const COL_JOB_CLASSIFICATION = "Primary Classification";
 const COL_GROUP_EMAIL = "Group Email";
 const COL_ACTIVE = "Active";
-const COL_EMPLOYEE_DRIVE_FOLDER_ID = "Employee Drive Folder ID"; // Recommend adding this column
+const COL_EMPLOYEE_DRIVE_FOLDER_ID = "Employee Folder ID"; // Recommend adding this column
 const COL_EMPLOYEE_MEDREC_FOLDER_ID = "Employee MedRec Folder ID"; // Recommend adding this column
 
 // --- Other ---

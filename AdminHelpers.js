@@ -4,6 +4,79 @@
  */
 
 /**
+ * Checks if a user is already a member of a Google Group.
+ *
+ * @param {string} userEmail The email address of the user to check.
+ * @param {string} groupEmail The email address of the group to check.
+ * @returns {boolean} True if user is a member, false if not or group doesn't exist.
+ */
+function isUserMemberOfGroup(userEmail, groupEmail) {
+  if (!userEmail || !groupEmail) {
+    return false;
+  }
+  
+  try {
+    const member = AdminDirectory.Members.get(groupEmail, userEmail);
+    return member !== null;
+  } catch (error) {
+    if (error.message.includes("Resource Not Found") || error.message.includes("Member not found")) {
+      return false; // User is not a member, or group doesn't exist
+    }
+    Logger.log(`Error checking membership for ${userEmail} in group ${groupEmail}: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Checks if a Google Group exists.
+ *
+ * @param {string} groupEmail The email address of the group to check.
+ * @returns {boolean} True if group exists, false otherwise.
+ */
+function doesGroupExist(groupEmail) {
+  if (!groupEmail) {
+    return false;
+  }
+  
+  try {
+    const group = AdminDirectory.Groups.get(groupEmail);
+    return group !== null;
+  } catch (error) {
+    if (error.message.includes("Resource Not Found")) {
+      return false; // Group doesn't exist
+    }
+    Logger.log(`Error checking if group exists ${groupEmail}: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Sets the delivery settings for a group member to digest mode.
+ *
+ * @param {string} userEmail The email address of the user.
+ * @param {string} groupEmail The email address of the group.
+ * @returns {boolean} True if successful, false otherwise.
+ */
+function setMemberDeliveryToDigest(userEmail, groupEmail) {
+  if (!userEmail || !groupEmail) {
+    return false;
+  }
+  
+  try {
+    const deliverySettings = {
+      'delivery_settings': 'digest'
+    };
+    
+    AdminDirectory.Members.patch(deliverySettings, groupEmail, userEmail);
+    Logger.log(`Set delivery to digest for ${userEmail} in group ${groupEmail}.`);
+    return true;
+  } catch (error) {
+    Logger.log(`Error setting digest delivery for ${userEmail} in group ${groupEmail}: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Adds a user email to specified Google Groups.
  * Adds to both a specific group (e.g., role-based) and the main practice group.
  * Handles "Member already exists" errors gracefully.
@@ -23,30 +96,46 @@ function addMembershipToGroups(userEmail, specificGroupEmail, practiceWideGroupE
     role: 'MEMBER' // Or 'OWNER', 'MANAGER' if needed
   };
 
-  // Add to specific group if provided
+  // Add to specific group(s) if provided - handle comma-separated values
   if (specificGroupEmail) {
-    try {
-      // Check if AdminDirectory service is available
-      if (typeof AdminDirectory === 'undefined') {
-          throw new Error("AdminDirectory service is not enabled or available.");
-      }
-      AdminDirectory.Members.insert(member, specificGroupEmail);
-      Logger.log(`User ${userEmail} added as a member to the group ${specificGroupEmail}.`);
-    } catch (err) {
-      // Check for specific error messages
-      if (err.message.includes("Member already exists")) {
-        Logger.log(`User ${userEmail} is already in the group ${specificGroupEmail}.`);
-      } else if (err.message.includes("Resource Not Found: groupKey")) {
-         Logger.log(`Error adding ${userEmail} to ${specificGroupEmail}: Group not found.`);
-         SpreadsheetApp.getUi().alert(`Could not add user to group "${specificGroupEmail}" (Group not found).`);
-      } else if (err.message.includes("Not Authorized to access this resource/api")) {
-         Logger.log(`Authorization error adding ${userEmail} to ${specificGroupEmail}: ${err.message}`);
-         SpreadsheetApp.getUi().alert(`Authorization error adding user to group "${specificGroupEmail}". Ensure script has necessary permissions.`);
-      }
-      else {
-        Logger.log(`Error adding ${userEmail} to group ${specificGroupEmail}: ${err.message}`);
-        // Consider alerting the UI for unexpected errors
-        SpreadsheetApp.getUi().alert(`An unexpected error occurred adding the user to group "${specificGroupEmail}". Check logs.`);
+    if (!checkServiceAvailability("AdminDirectory", AdminDirectory)) {
+      return;
+    }
+    
+    // Parse comma-separated group emails from multi-select dropdown
+    const groupEmails = specificGroupEmail.split(',').map(email => email.trim()).filter(email => email.length > 0);
+    
+    for (const groupEmail of groupEmails) {
+      Logger.log(`Processing group: ${groupEmail}`);
+      
+      // Check if group exists first
+      if (!doesGroupExist(groupEmail)) {
+        Logger.log(`Group ${groupEmail} does not exist. Skipping addition of ${userEmail}.`);
+      } else if (isUserMemberOfGroup(userEmail, groupEmail)) {
+        Logger.log(`User ${userEmail} is already a member of group ${groupEmail}. Skipping addition.`);
+      } else {
+        // Group exists and user is not a member, proceed with addition
+        const addToGroupOperation = () => {
+          AdminDirectory.Members.insert(member, groupEmail);
+          return true;
+        };
+        
+        const result = executeWithRetry(
+          addToGroupOperation, 
+          `Adding ${userEmail} to group ${groupEmail}`
+        );
+        
+        if (result) {
+          Logger.log(`User ${userEmail} added as a member to the group ${groupEmail}.`);
+          
+          // Set delivery to digest for specific groups (not practice group)
+          const digestResult = setMemberDeliveryToDigest(userEmail, groupEmail);
+          if (digestResult) {
+            Logger.log(`Delivery settings set to digest for ${userEmail} in group ${groupEmail}.`);
+          }
+        } else {
+          Logger.log(`Failed to add ${userEmail} to group ${groupEmail} after retries.`);
+        }
       }
     }
   } else {
@@ -55,24 +144,31 @@ function addMembershipToGroups(userEmail, specificGroupEmail, practiceWideGroupE
 
   // Add to practice-wide group
   if (practiceWideGroupEmail) {
-     try {
-       if (typeof AdminDirectory === 'undefined') {
-           throw new Error("AdminDirectory service is not enabled or available.");
-       }
-      AdminDirectory.Members.insert(member, practiceWideGroupEmail);
-      Logger.log(`User ${userEmail} added as a member to the group ${practiceWideGroupEmail}.`);
-    } catch (err) {
-      if (err.message.includes("Member already exists")) {
-        Logger.log(`User ${userEmail} is already in the group ${practiceWideGroupEmail}.`);
-      } else if (err.message.includes("Resource Not Found: groupKey")) {
-         Logger.log(`Error adding ${userEmail} to ${practiceWideGroupEmail}: Group not found.`);
-          SpreadsheetApp.getUi().alert(`Could not add user to practice group "${practiceWideGroupEmail}" (Group not found).`);
-      } else if (err.message.includes("Not Authorized to access this resource/api")) {
-         Logger.log(`Authorization error adding ${userEmail} to ${practiceWideGroupEmail}: ${err.message}`);
-         SpreadsheetApp.getUi().alert(`Authorization error adding user to practice group "${practiceWideGroupEmail}". Ensure script has necessary permissions.`);
+    if (!checkServiceAvailability("AdminDirectory", AdminDirectory)) {
+      return;
+    }
+    
+    // Check if group exists first
+    if (!doesGroupExist(practiceWideGroupEmail)) {
+      Logger.log(`Practice group ${practiceWideGroupEmail} does not exist. Skipping addition of ${userEmail}.`);
+    } else if (isUserMemberOfGroup(userEmail, practiceWideGroupEmail)) {
+      Logger.log(`User ${userEmail} is already a member of practice group ${practiceWideGroupEmail}. Skipping addition.`);
+    } else {
+      // Group exists and user is not a member, proceed with addition
+      const addToPracticeGroupOperation = () => {
+        AdminDirectory.Members.insert(member, practiceWideGroupEmail);
+        return true;
+      };
+      
+      const result = executeWithRetry(
+        addToPracticeGroupOperation, 
+        `Adding ${userEmail} to practice group ${practiceWideGroupEmail}`
+      );
+      
+      if (result) {
+        Logger.log(`User ${userEmail} added as a member to the group ${practiceWideGroupEmail}.`);
       } else {
-        Logger.log(`Error adding ${userEmail} to practice group ${practiceWideGroupEmail}: ${err.message}`);
-         SpreadsheetApp.getUi().alert(`An unexpected error occurred adding the user to practice group "${practiceWideGroupEmail}". Check logs.`);
+        Logger.log(`Failed to add ${userEmail} to practice group ${practiceWideGroupEmail} after retries.`);
       }
     }
   } else {
@@ -97,25 +193,24 @@ function removeMembershipFromGroups(userEmail, specificGroupEmail, practiceWideG
 
      // Remove from specific group if provided
     if (specificGroupEmail) {
-        try {
-             if (typeof AdminDirectory === 'undefined') {
-                throw new Error("AdminDirectory service is not enabled or available.");
-            }
+        if (!checkServiceAvailability("AdminDirectory", AdminDirectory)) {
+            return;
+        }
+        
+        const removeFromGroupOperation = () => {
             AdminDirectory.Members.remove(specificGroupEmail, userEmail);
+            return true;
+        };
+        
+        const result = executeWithRetry(
+            removeFromGroupOperation, 
+            `Removing ${userEmail} from group ${specificGroupEmail}`
+        );
+        
+        if (result) {
             Logger.log(`User ${userEmail} removed from the group ${specificGroupEmail}.`);
-        } catch (err) {
-            if (err.message.includes("Resource Not Found: memberKey")) {
-                Logger.log(`User ${userEmail} was not found in the group ${specificGroupEmail}.`);
-            } else if (err.message.includes("Resource Not Found: groupKey")) {
-                 Logger.log(`Error removing ${userEmail} from ${specificGroupEmail}: Group not found.`);
-                 SpreadsheetApp.getUi().alert(`Could not remove user from group "${specificGroupEmail}" (Group not found).`);
-            } else if (err.message.includes("Not Authorized to access this resource/api")) {
-                Logger.log(`Authorization error removing ${userEmail} from ${specificGroupEmail}: ${err.message}`);
-                SpreadsheetApp.getUi().alert(`Authorization error removing user from group "${specificGroupEmail}". Ensure script has necessary permissions.`);
-           } else {
-                Logger.log(`Error removing ${userEmail} from group ${specificGroupEmail}: ${err.message}`);
-                SpreadsheetApp.getUi().alert(`An unexpected error occurred removing the user from group "${specificGroupEmail}". Check logs.`);
-            }
+        } else {
+            Logger.log(`Failed to remove ${userEmail} from group ${specificGroupEmail} after retries.`);
         }
     } else {
       Logger.log(`Skipping removing ${userEmail} from specific group (no group email provided).`);
@@ -123,25 +218,24 @@ function removeMembershipFromGroups(userEmail, specificGroupEmail, practiceWideG
 
     // Remove from practice-wide group
     if (practiceWideGroupEmail) {
-       try {
-            if (typeof AdminDirectory === 'undefined') {
-                throw new Error("AdminDirectory service is not enabled or available.");
-            }
+        if (!checkServiceAvailability("AdminDirectory", AdminDirectory)) {
+            return;
+        }
+        
+        const removeFromPracticeGroupOperation = () => {
             AdminDirectory.Members.remove(practiceWideGroupEmail, userEmail);
+            return true;
+        };
+        
+        const result = executeWithRetry(
+            removeFromPracticeGroupOperation, 
+            `Removing ${userEmail} from practice group ${practiceWideGroupEmail}`
+        );
+        
+        if (result) {
             Logger.log(`User ${userEmail} removed from the group ${practiceWideGroupEmail}.`);
-        } catch (err) {
-            if (err.message.includes("Resource Not Found: memberKey")) {
-                Logger.log(`User ${userEmail} was not found in the group ${practiceWideGroupEmail}.`);
-            } else if (err.message.includes("Resource Not Found: groupKey")) {
-                 Logger.log(`Error removing ${userEmail} from ${practiceWideGroupEmail}: Group not found.`);
-                 SpreadsheetApp.getUi().alert(`Could not remove user from practice group "${practiceWideGroupEmail}" (Group not found).`);
-            } else if (err.message.includes("Not Authorized to access this resource/api")) {
-                Logger.log(`Authorization error removing ${userEmail} from ${practiceWideGroupEmail}: ${err.message}`);
-                SpreadsheetApp.getUi().alert(`Authorization error removing user from practice group "${practiceWideGroupEmail}". Ensure script has necessary permissions.`);
-            } else {
-                Logger.log(`Error removing ${userEmail} from practice group ${practiceWideGroupEmail}: ${err.message}`);
-                SpreadsheetApp.getUi().alert(`An unexpected error occurred removing the user from practice group "${practiceWideGroupEmail}". Check logs.`);
-            }
+        } else {
+            Logger.log(`Failed to remove ${userEmail} from practice group ${practiceWideGroupEmail} after retries.`);
         }
     } else {
         Logger.log(`Skipping removing ${userEmail} from practice-wide group (no group email provided).`);
