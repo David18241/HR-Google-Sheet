@@ -191,26 +191,41 @@ function removeMembershipFromGroups(userEmail, specificGroupEmail, practiceWideG
         return;
     }
 
-     // Remove from specific group if provided
+     // Remove from specific group(s) if provided - handle comma-separated values
     if (specificGroupEmail) {
         if (!checkServiceAvailability("AdminDirectory", AdminDirectory)) {
             return;
         }
         
-        const removeFromGroupOperation = () => {
-            AdminDirectory.Members.remove(specificGroupEmail, userEmail);
-            return true;
-        };
+        // Parse comma-separated group emails from multi-select dropdown
+        const groupEmails = specificGroupEmail.split(',').map(email => email.trim()).filter(email => email.length > 0);
         
-        const result = executeWithRetry(
-            removeFromGroupOperation, 
-            `Removing ${userEmail} from group ${specificGroupEmail}`
-        );
-        
-        if (result) {
-            Logger.log(`User ${userEmail} removed from the group ${specificGroupEmail}.`);
-        } else {
-            Logger.log(`Failed to remove ${userEmail} from group ${specificGroupEmail} after retries.`);
+        for (const groupEmail of groupEmails) {
+            Logger.log(`Processing group removal: ${groupEmail}`);
+            
+            // Check if group exists first
+            if (!doesGroupExist(groupEmail)) {
+                Logger.log(`Group ${groupEmail} does not exist. Skipping removal of ${userEmail}.`);
+            } else if (!isUserMemberOfGroup(userEmail, groupEmail)) {
+                Logger.log(`User ${userEmail} is not a member of group ${groupEmail}. Skipping removal.`);
+            } else {
+                // Group exists and user is a member, proceed with removal
+                const removeFromGroupOperation = () => {
+                    AdminDirectory.Members.remove(groupEmail, userEmail);
+                    return true;
+                };
+                
+                const result = executeWithRetry(
+                    removeFromGroupOperation, 
+                    `Removing ${userEmail} from group ${groupEmail}`
+                );
+                
+                if (result) {
+                    Logger.log(`User ${userEmail} removed from the group ${groupEmail}.`);
+                } else {
+                    Logger.log(`Failed to remove ${userEmail} from group ${groupEmail} after retries.`);
+                }
+            }
         }
     } else {
       Logger.log(`Skipping removing ${userEmail} from specific group (no group email provided).`);
@@ -243,79 +258,183 @@ function removeMembershipFromGroups(userEmail, specificGroupEmail, practiceWideG
 }
 
 /**
+ * Gets default access values for a specific employee classification from the Default Access sheet.
+ * Returns the checkbox values as boolean values for copying into the Employee sheet.
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} defaultAccessSheet The Default Access sheet.
+ * @param {string} jobClassification The employee classification to look up.
+ * @returns {Object|null} Object containing the default access values, or null if not found.
+ */
+function getDefaultAccessValues(defaultAccessSheet, jobClassification) {
+    try {
+        // Get all data from the Default Access sheet
+        const dataRange = defaultAccessSheet.getDataRange();
+        const values = dataRange.getValues();
+        
+        // Find the row with matching employee classification
+        let matchingRowIndex = -1;
+        for (let i = 1; i < values.length; i++) { // Start from row 2 (index 1)
+            if (values[i][0] && values[i][0].toString().trim() === jobClassification.trim()) {
+                matchingRowIndex = i;
+                break;
+            }
+        }
+        
+        if (matchingRowIndex === -1) {
+            Logger.log(`No matching classification found for "${jobClassification}" in Default Access sheet.`);
+            return null;
+        }
+        
+        const matchingRow = values[matchingRowIndex];
+        
+        // Column mapping for Default Access sheet based on the screenshot
+        // A: Employee Classification, B: No Access, C: Health & financial info, etc.
+        const defaultAccessValues = {
+            noAccess: matchingRow[1] || false,                    // B - No Access
+            healthFinancialInfo: matchingRow[2] || false,         // C - Health & financial information (EMR & PMS)
+            emailCloudDrive: matchingRow[3] || false,             // D - Email and Cloud Drive
+            textVoicemail: matchingRow[4] || false,               // E - Text and Voicemail
+            voip: matchingRow[5] || false,                        // F - VOIP
+            rems: matchingRow[6] || false                         // G - REMS
+        };
+        
+        Logger.log(`Found default access values for "${jobClassification}": ${JSON.stringify(defaultAccessValues)}`);
+        return defaultAccessValues;
+        
+    } catch (error) {
+        Logger.log(`Error getting default access values for "${jobClassification}": ${error.message}`);
+        return null;
+    }
+}
+
+/**
  * Updates the Access Log spreadsheet with new employee information.
- * Copies formatting from the last row and clears specific columns before adding new data.
+ * Creates a new row in the Employee sheet and populates it with default access values 
+ * based on employee classification from the Default Access sheet.
  *
  * @param {string} spreadsheetId The ID of the Access Log spreadsheet.
  * @param {string} sheetName The name of the sheet within the Access Log (e.g., "Employees").
  * @param {string} employeeName Formatted employee name ("Last, First").
- * @param {string} startDate Formatted start date string. // Changed type hint to string as passed from main workflow
+ * @param {string} startDate Formatted start date string.
  * @param {string} jobClassification The employee's job title/classification.
  */
 function updateAccessLog(spreadsheetId, sheetName, employeeName, startDate, jobClassification) {
   try {
     const accessLogSs = SpreadsheetApp.openById(spreadsheetId);
-    const accessLogSheet = accessLogSs.getSheetByName(sheetName);
+    const employeeSheet = accessLogSs.getSheetByName(sheetName);
+    const defaultAccessSheet = accessLogSs.getSheetByName("Default Access");
 
-    if (!accessLogSheet) {
+    if (!employeeSheet) {
         Logger.log(`Error: Access Log sheet "${sheetName}" not found in spreadsheet ID ${spreadsheetId}.`);
         SpreadsheetApp.getUi().alert(`Error: Could not find the sheet "${sheetName}" in the Access Log. Update skipped.`);
         return;
     }
 
-    const lastRow = accessLogSheet.getLastRow();
-    const lastCol = accessLogSheet.getLastColumn();
-
-    // Ensure there's data to copy from
-    if (lastRow < 2) { // Assuming header is row 1
-        Logger.log("Access Log sheet has no data rows to copy format from. Appending data without format copy.");
-         // Adjust column order/number based on your ACTUAL Access Log sheet structure
-         // Example: Assuming Name=Col B, Job=Col C, StartDate=Col F
-         const newRowData = [];
-         newRowData[1] = employeeName; // Index 1 for Col B
-         newRowData[2] = jobClassification; // Index 2 for Col C
-         newRowData[5] = startDate; // Index 5 for Col F (adjust!)
-         accessLogSheet.appendRow(newRowData);
-         Logger.log(`Appended new row to Access Log for ${employeeName} as sheet was empty/had only header.`);
-         return;
+    if (!defaultAccessSheet) {
+        Logger.log(`Error: Default Access sheet not found in spreadsheet ID ${spreadsheetId}.`);
+        SpreadsheetApp.getUi().alert(`Error: Could not find the "Default Access" sheet in the Access Log. Update skipped.`);
+        return;
     }
 
-    // --- Define columns to update ---
-    // It's safer to find columns by header dynamically if possible.
-    // Using fixed indices from original script for now, but verify these match YOUR Access Log sheet:
-    const employeeNameCol = 2; // B
-    const jobClassCol = 3;     // C
-    // Original script set date in lastCol - 2. Let's assume this is correct, BUT VERIFY.
-    // Example: If lastCol=8 (H), this is F (col 6)
-    const startDateCol = lastCol - 2;
+    const lastRow = employeeSheet.getLastRow();
+    const lastCol = employeeSheet.getLastColumn();
+
+    // Get default access values for this employee classification
+    const defaultAccessValues = getDefaultAccessValues(defaultAccessSheet, jobClassification);
+    
+    if (!defaultAccessValues) {
+        Logger.log(`Warning: No default access values found for classification "${jobClassification}". Using empty values.`);
+    }
 
     // --- Perform Copy/Paste and Update ---
     const newRowIndex = lastRow + 1;
 
-    // Copy the entire previous data row's format to the new row
-    const sourceRange = accessLogSheet.getRange(lastRow, 1, 1, lastCol);
-    const targetRange = accessLogSheet.getRange(newRowIndex, 1, 1, lastCol);
-    sourceRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    // Copy formatting from the row above if it exists
+    if (lastRow >= 2) { // Ensure there's a data row to copy format from
+        const sourceRange = employeeSheet.getRange(lastRow, 1, 1, lastCol);
+        const targetRange = employeeSheet.getRange(newRowIndex, 1, 1, lastCol);
+        
+        // Copy both format and data validation (for checkboxes)
+        sourceRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+        sourceRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION, false);
+        
+        // Clear content from the new row AFTER pasting format and validation
+        targetRange.clearContent();
+    }
 
-    // Clear content from the new row AFTER pasting format
-    targetRange.clearContent();
+    // Column mapping based on the Employee sheet structure (1-based indexing)
+    // Note: Column A is a buffer column, actual data starts at column B
+    const columnMapping = {
+        nameOfIndividual: 2,           // B - Name of Individual
+        employeeClassification: 3,      // C - Employee Classification 
+        noAccess: 4,                   // D - No Access
+        healthFinancialInfo: 5,        // E - Health & financial information (EMR & PMS)
+        emailCloudDrive: 6,            // F - Email and Cloud Drive
+        textVoicemail: 7,              // G - Text and Voicemail (Klara)
+        voip: 8,                       // H - VOIP
+        rems: 9,                       // I - REMS (iPledge, etc.)
+        officeKey: 10,                 // J - Office Key
+        alarmSystemCode: 11,           // K - Alarm System Code
+        dateAccessGranted: 12,         // L - Date Access Granted
+        dateAccessRevoked: 13,         // M - Date Access Revoked
+        comments: 14                   // N - Comments
+    };
 
-    // Set new values in the specific columns for the new row
-    accessLogSheet.getRange(newRowIndex, employeeNameCol).setValue(employeeName);
-    accessLogSheet.getRange(newRowIndex, jobClassCol).setValue(jobClassification);
-    // Ensure startDate is a value Sheets can understand (string "Month Day, Year" or a JS Date object)
-    accessLogSheet.getRange(newRowIndex, startDateCol).setValue(startDate);
+    // Debug logging
+    Logger.log(`Setting values for row ${newRowIndex}:`);
+    Logger.log(`  Employee Name: "${employeeName}" -> Column ${columnMapping.nameOfIndividual} (B)`);
+    Logger.log(`  Job Classification: "${jobClassification}" -> Column ${columnMapping.employeeClassification} (C)`);
+    Logger.log(`  Start Date: "${startDate}" -> Column ${columnMapping.dateAccessGranted} (L)`);
+    
+    // Set the employee name and classification
+    employeeSheet.getRange(newRowIndex, columnMapping.nameOfIndividual).setValue(employeeName);
+    employeeSheet.getRange(newRowIndex, columnMapping.employeeClassification).setValue(jobClassification);
+    
+    // Set access values from default access lookup (copy values, not formulas)
+    if (defaultAccessValues) {
+        // Set checkbox values explicitly with proper boolean conversion
+        const accessColumns = [
+            { col: columnMapping.noAccess, value: defaultAccessValues.noAccess },
+            { col: columnMapping.healthFinancialInfo, value: defaultAccessValues.healthFinancialInfo },
+            { col: columnMapping.emailCloudDrive, value: defaultAccessValues.emailCloudDrive },
+            { col: columnMapping.textVoicemail, value: defaultAccessValues.textVoicemail },
+            { col: columnMapping.voip, value: defaultAccessValues.voip },
+            { col: columnMapping.rems, value: defaultAccessValues.rems }
+        ];
+        
+        accessColumns.forEach(item => {
+            const cellRange = employeeSheet.getRange(newRowIndex, item.col);
+            // Ensure checkbox data validation is set
+            const validation = SpreadsheetApp.newDataValidation()
+                .requireCheckbox()
+                .build();
+            cellRange.setDataValidation(validation);
+            // Set the boolean value
+            cellRange.setValue(item.value === true);
+        });
+        
+        Logger.log(`  Default access values applied: ${JSON.stringify(defaultAccessValues)}`);
+    }
+    
+    // Set Office Key and Alarm System Code to false (unchecked) with checkbox validation
+    const officeKeyRange = employeeSheet.getRange(newRowIndex, columnMapping.officeKey);
+    const alarmCodeRange = employeeSheet.getRange(newRowIndex, columnMapping.alarmSystemCode);
+    
+    // Ensure checkbox data validation
+    const checkboxValidation = SpreadsheetApp.newDataValidation()
+        .requireCheckbox()
+        .build();
+    
+    officeKeyRange.setDataValidation(checkboxValidation);
+    alarmCodeRange.setDataValidation(checkboxValidation);
+    
+    officeKeyRange.setValue(false);
+    alarmCodeRange.setValue(false);
+    
+    // Set the date access granted to the onboarding start date
+    employeeSheet.getRange(newRowIndex, columnMapping.dateAccessGranted).setValue(startDate);
 
-    // Original script cleared last 5 columns - let's replicate ONLY if necessary.
-    // This seems odd if you just set the date in lastCol - 2.
-    // If you truly need to clear specific trailing columns AFTER setting values, do it here.
-    // Example: Clear cols lastCol-4 through lastCol
-    // const startClearCol = Math.max(1, lastCol - 4); // Don't try to clear before Col A
-    // if (lastCol >= startClearCol) {
-    //    accessLogSheet.getRange(newRowIndex, startClearCol, 1, lastCol - startClearCol + 1).clearContent();
-    // }
-
-    Logger.log(`Updated Access Log sheet "${sheetName}" for ${employeeName}.`);
+    Logger.log(`Updated Access Log sheet "${sheetName}" for ${employeeName} with classification "${jobClassification}".`);
 
   } catch (error) {
     Logger.log(`Error updating Access Log sheet "${sheetName}" for ${employeeName}: ${error.message} \nStack: ${error.stack}`);

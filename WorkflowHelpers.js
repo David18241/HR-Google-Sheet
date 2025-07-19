@@ -374,13 +374,23 @@ function archiveEmployeeFolders(employeeData) {
         Logger.log(`Could not remove access for ${employeeData.workEmail}: ${removeError.message}`);
       }
       
-      // Move to Former Employees folder
+      // Move to Former Employees folder (check if it's in a shared drive first)
       if (FORMER_EMPLOYEES_FOLDER_ID) {
-        const formerEmployeesFolder = DriveApp.getFolderById(FORMER_EMPLOYEES_FOLDER_ID);
-        const originalParentFolder = employeeFolder.getParents().next();
-        formerEmployeesFolder.addFolder(employeeFolder);
-        originalParentFolder.removeFolder(employeeFolder);
-        Logger.log(`Employee folder moved to Former Employees folder for ${employeeData.employeeFolderName}`);
+        try {
+          const formerEmployeesFolder = DriveApp.getFolderById(FORMER_EMPLOYEES_FOLDER_ID);
+          const originalParentFolder = employeeFolder.getParents().next();
+          
+          // Try to move the folder - if it fails due to shared drive, catch the error
+          formerEmployeesFolder.addFolder(employeeFolder);
+          originalParentFolder.removeFolder(employeeFolder);
+          Logger.log(`Employee folder moved to Former Employees folder for ${employeeData.employeeFolderName}`);
+        } catch (moveError) {
+          if (moveError.message.includes("shared drive")) {
+            Logger.log(`Employee folder for ${employeeData.employeeFolderName} is in a shared drive and cannot be moved. Access has been removed instead.`);
+          } else {
+            Logger.log(`Could not move employee folder for ${employeeData.employeeFolderName}: ${moveError.message}`);
+          }
+        }
       }
       
       Logger.log(`Folder access removed for ${employeeData.employeeFolderName}`);
