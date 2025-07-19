@@ -1,3 +1,5 @@
+# Sensitive configuration files (keep your private versions)
+Constants.js
 .clasp.json
 
 # Python virtual environment
@@ -8,3 +10,10 @@ __pycache__/
 
 # Claude settings
 .claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
