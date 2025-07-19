@@ -1,6 +1,7 @@
 # Sensitive configuration files (keep your private versions)
 Constants.js
 .clasp.json
+.claspignore
 
 # Python virtual environment
 venv/
